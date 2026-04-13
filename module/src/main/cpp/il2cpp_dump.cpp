@@ -357,9 +357,12 @@ void il2cpp_api_init(void *handle) {
             LOGI("Waiting for il2cpp_init...");
             sleep(1);
         }
-    } else {
-        LOGW("il2cpp_is_vm_thread not found, sleeping 3s");
+        // Extra wait for all classes to be registered
+        LOGI("VM thread ready, waiting 3s for class registration...");
         sleep(3);
+    } else {
+        LOGW("il2cpp_is_vm_thread not found, sleeping 5s");
+        sleep(5);
     }
     auto domain = il2cpp_domain_get();
     if (domain) {
@@ -406,7 +409,9 @@ void il2cpp_dump(const char *outDir) {
         imageOutput << "// Dumped via il2cpp_class_for_each\n";
         imageOutput << "// Total classes: " << g_all_classes.size() << "\n";
 
-        for (auto klass : g_all_classes) {
+        int errors = 0;
+        for (size_t ci = 0; ci < g_all_classes.size(); ci++) {
+            auto klass = g_all_classes[ci];
             if (!klass) continue;
             auto type = il2cpp_class_get_type(klass);
             if (!type) continue;
@@ -415,11 +420,25 @@ void il2cpp_dump(const char *outDir) {
             if (il2cpp_class_get_image) {
                 auto image = il2cpp_class_get_image(klass);
                 if (image && il2cpp_image_get_name) {
-                    imageStr << "\n// Dll : " << il2cpp_image_get_name(image);
+                    auto imgName = il2cpp_image_get_name(image);
+                    if (imgName) {
+                        imageStr << "\n// Dll : " << imgName;
+                    }
                 }
             }
-            auto outPut = imageStr.str() + dump_type(type);
-            outPuts.push_back(outPut);
+            try {
+                auto outPut = imageStr.str() + dump_type(type);
+                outPuts.push_back(outPut);
+            } catch (...) {
+                errors++;
+                LOGW("Error dumping class %zu", ci);
+            }
+            if (ci % 500 == 0 && ci > 0) {
+                LOGI("Progress: %zu/%zu classes", ci, g_all_classes.size());
+            }
+        }
+        if (errors > 0) {
+            LOGW("Total dump errors: %d", errors);
         }
     } else {
         LOGE("No method available to enumerate classes!");
