@@ -322,100 +322,110 @@ std::string dump_type(const Il2CppType *type) {
     return outPut.str();
 }
 
+// Global collection for class_for_each callback
+static std::vector<Il2CppClass*> g_all_classes;
+
+static void collect_class_callback(Il2CppClass* klass, void* userData) {
+    g_all_classes.push_back(klass);
+}
+
 void il2cpp_api_init(void *handle) {
     LOGI("il2cpp_handle: %p", handle);
     init_il2cpp_api(handle);
+
+    // Try il2cpp_domain_get_assemblies first, fall back to il2cpp_class_for_each
     if (il2cpp_domain_get_assemblies) {
         Dl_info dlInfo;
         if (dladdr((void *) il2cpp_domain_get_assemblies, &dlInfo)) {
             il2cpp_base = reinterpret_cast<uint64_t>(dlInfo.dli_fbase);
         }
-        LOGI("il2cpp_base: %" PRIx64"", il2cpp_base);
+    } else if (il2cpp_domain_get) {
+        // Fallback: get base from il2cpp_domain_get
+        LOGW("il2cpp_domain_get_assemblies not found, using fallback");
+        Dl_info dlInfo;
+        if (dladdr((void *) il2cpp_domain_get, &dlInfo)) {
+            il2cpp_base = reinterpret_cast<uint64_t>(dlInfo.dli_fbase);
+        }
     } else {
         LOGE("Failed to initialize il2cpp api.");
         return;
     }
-    while (!il2cpp_is_vm_thread(nullptr)) {
-        LOGI("Waiting for il2cpp_init...");
-        sleep(1);
+    LOGI("il2cpp_base: %" PRIx64"", il2cpp_base);
+
+    if (il2cpp_is_vm_thread) {
+        while (!il2cpp_is_vm_thread(nullptr)) {
+            LOGI("Waiting for il2cpp_init...");
+            sleep(1);
+        }
+    } else {
+        LOGW("il2cpp_is_vm_thread not found, sleeping 3s");
+        sleep(3);
     }
     auto domain = il2cpp_domain_get();
-    il2cpp_thread_attach(domain);
+    if (domain) {
+        il2cpp_thread_attach(domain);
+    }
 }
 
 void il2cpp_dump(const char *outDir) {
     LOGI("dumping...");
-    size_t size;
-    auto domain = il2cpp_domain_get();
-    auto assemblies = il2cpp_domain_get_assemblies(domain, &size);
-    std::stringstream imageOutput;
-    for (int i = 0; i < size; ++i) {
-        auto image = il2cpp_assembly_get_image(assemblies[i]);
-        imageOutput << "// Image " << i << ": " << il2cpp_image_get_name(image) << "\n";
-    }
     std::vector<std::string> outPuts;
-    if (il2cpp_image_get_class) {
-        LOGI("Version greater than 2018.3");
-        //使用il2cpp_image_get_class
+    std::stringstream imageOutput;
+
+    if (il2cpp_domain_get_assemblies) {
+        // Original path: enumerate assemblies
+        LOGI("Using il2cpp_domain_get_assemblies");
+        size_t size;
+        auto domain = il2cpp_domain_get();
+        auto assemblies = il2cpp_domain_get_assemblies(domain, &size);
         for (int i = 0; i < size; ++i) {
             auto image = il2cpp_assembly_get_image(assemblies[i]);
-            std::stringstream imageStr;
-            imageStr << "\n// Dll : " << il2cpp_image_get_name(image);
-            auto classCount = il2cpp_image_get_class_count(image);
-            for (int j = 0; j < classCount; ++j) {
-                auto klass = il2cpp_image_get_class(image, j);
-                auto type = il2cpp_class_get_type(const_cast<Il2CppClass *>(klass));
-                //LOGD("type name : %s", il2cpp_type_get_name(type));
-                auto outPut = imageStr.str() + dump_type(type);
-                outPuts.push_back(outPut);
+            imageOutput << "// Image " << i << ": " << il2cpp_image_get_name(image) << "\n";
+        }
+        if (il2cpp_image_get_class) {
+            for (int i = 0; i < size; ++i) {
+                auto image = il2cpp_assembly_get_image(assemblies[i]);
+                std::stringstream imageStr;
+                imageStr << "\n// Dll : " << il2cpp_image_get_name(image);
+                auto classCount = il2cpp_image_get_class_count(image);
+                for (int j = 0; j < classCount; ++j) {
+                    auto klass = il2cpp_image_get_class(image, j);
+                    auto type = il2cpp_class_get_type(const_cast<Il2CppClass *>(klass));
+                    auto outPut = imageStr.str() + dump_type(type);
+                    outPuts.push_back(outPut);
+                }
             }
+        }
+    } else if (il2cpp_class_for_each) {
+        // Fallback: use il2cpp_class_for_each to enumerate all classes
+        LOGI("Using il2cpp_class_for_each (il2cpp_domain_get_assemblies not available)");
+        g_all_classes.clear();
+        il2cpp_class_for_each(collect_class_callback, nullptr);
+        LOGI("Collected %zu classes", g_all_classes.size());
+
+        imageOutput << "// Dumped via il2cpp_class_for_each\n";
+        imageOutput << "// Total classes: " << g_all_classes.size() << "\n";
+
+        for (auto klass : g_all_classes) {
+            if (!klass) continue;
+            auto type = il2cpp_class_get_type(klass);
+            if (!type) continue;
+            // Get image name for this class
+            std::stringstream imageStr;
+            if (il2cpp_class_get_image) {
+                auto image = il2cpp_class_get_image(klass);
+                if (image && il2cpp_image_get_name) {
+                    imageStr << "\n// Dll : " << il2cpp_image_get_name(image);
+                }
+            }
+            auto outPut = imageStr.str() + dump_type(type);
+            outPuts.push_back(outPut);
         }
     } else {
-        LOGI("Version less than 2018.3");
-        //使用反射
-        auto corlib = il2cpp_get_corlib();
-        auto assemblyClass = il2cpp_class_from_name(corlib, "System.Reflection", "Assembly");
-        auto assemblyLoad = il2cpp_class_get_method_from_name(assemblyClass, "Load", 1);
-        auto assemblyGetTypes = il2cpp_class_get_method_from_name(assemblyClass, "GetTypes", 0);
-        if (assemblyLoad && assemblyLoad->methodPointer) {
-            LOGI("Assembly::Load: %p", assemblyLoad->methodPointer);
-        } else {
-            LOGI("miss Assembly::Load");
-            return;
-        }
-        if (assemblyGetTypes && assemblyGetTypes->methodPointer) {
-            LOGI("Assembly::GetTypes: %p", assemblyGetTypes->methodPointer);
-        } else {
-            LOGI("miss Assembly::GetTypes");
-            return;
-        }
-        typedef void *(*Assembly_Load_ftn)(void *, Il2CppString *, void *);
-        typedef Il2CppArray *(*Assembly_GetTypes_ftn)(void *, void *);
-        for (int i = 0; i < size; ++i) {
-            auto image = il2cpp_assembly_get_image(assemblies[i]);
-            std::stringstream imageStr;
-            auto image_name = il2cpp_image_get_name(image);
-            imageStr << "\n// Dll : " << image_name;
-            //LOGD("image name : %s", image->name);
-            auto imageName = std::string(image_name);
-            auto pos = imageName.rfind('.');
-            auto imageNameNoExt = imageName.substr(0, pos);
-            auto assemblyFileName = il2cpp_string_new(imageNameNoExt.data());
-            auto reflectionAssembly = ((Assembly_Load_ftn) assemblyLoad->methodPointer)(nullptr,
-                                                                                        assemblyFileName,
-                                                                                        nullptr);
-            auto reflectionTypes = ((Assembly_GetTypes_ftn) assemblyGetTypes->methodPointer)(
-                    reflectionAssembly, nullptr);
-            auto items = reflectionTypes->vector;
-            for (int j = 0; j < reflectionTypes->max_length; ++j) {
-                auto klass = il2cpp_class_from_system_type((Il2CppReflectionType *) items[j]);
-                auto type = il2cpp_class_get_type(klass);
-                //LOGD("type name : %s", il2cpp_type_get_name(type));
-                auto outPut = imageStr.str() + dump_type(type);
-                outPuts.push_back(outPut);
-            }
-        }
+        LOGE("No method available to enumerate classes!");
+        return;
     }
+
     LOGI("write dump file");
     auto outPath = std::string(outDir).append("/files/dump.cs");
     std::ofstream outStream(outPath);
@@ -425,5 +435,5 @@ void il2cpp_dump(const char *outDir) {
         outStream << outPuts[i];
     }
     outStream.close();
-    LOGI("dump done!");
+    LOGI("dump done! %zu classes written", count);
 }
