@@ -97,7 +97,7 @@ std::string dump_method(Il2CppClass *klass) {
     outPut << "\n\t// Methods\n";
     void *iter = nullptr;
     while (auto method = il2cpp_class_get_methods(klass, &iter)) {
-        //TODO attribute
+        if (!method) break;
         if (method->methodPointer) {
             outPut << "\t// RVA: 0x";
             outPut << std::hex << (uint64_t) method->methodPointer - il2cpp_base;
@@ -106,24 +106,31 @@ std::string dump_method(Il2CppClass *klass) {
         } else {
             outPut << "\t// RVA: 0x VA: 0x0";
         }
-        /*if (method->slot != 65535) {
-            outPut << " Slot: " << std::dec << method->slot;
-        }*/
         outPut << "\n\t";
         uint32_t iflags = 0;
         auto flags = il2cpp_method_get_flags(method, &iflags);
         outPut << get_method_modifier(flags);
-        //TODO genericContainerIndex
         auto return_type = il2cpp_method_get_return_type(method);
-        if (_il2cpp_type_is_byref(return_type)) {
+        if (return_type && _il2cpp_type_is_byref(return_type)) {
             outPut << "ref ";
         }
-        auto return_class = il2cpp_class_from_type(return_type);
-        outPut << il2cpp_class_get_name(return_class) << " " << il2cpp_method_get_name(method)
-               << "(";
+        if (return_type) {
+            auto return_class = il2cpp_class_from_type(return_type);
+            if (return_class) {
+                auto rname = il2cpp_class_get_name(return_class);
+                outPut << (rname ? rname : "?");
+            } else {
+                outPut << "?";
+            }
+        } else {
+            outPut << "void";
+        }
+        auto mname = il2cpp_method_get_name(method);
+        outPut << " " << (mname ? mname : "?") << "(";
         auto param_count = il2cpp_method_get_param_count(method);
         for (int i = 0; i < param_count; ++i) {
             auto param = il2cpp_method_get_param(method, i);
+            if (!param) { outPut << "? ?, "; continue; }
             auto attrs = param->attrs;
             if (_il2cpp_type_is_byref(param)) {
                 if (attrs & PARAM_ATTRIBUTE_OUT && !(attrs & PARAM_ATTRIBUTE_IN)) {
@@ -133,24 +140,22 @@ std::string dump_method(Il2CppClass *klass) {
                 } else {
                     outPut << "ref ";
                 }
-            } else {
-                if (attrs & PARAM_ATTRIBUTE_IN) {
-                    outPut << "[In] ";
-                }
-                if (attrs & PARAM_ATTRIBUTE_OUT) {
-                    outPut << "[Out] ";
-                }
             }
             auto parameter_class = il2cpp_class_from_type(param);
-            outPut << il2cpp_class_get_name(parameter_class) << " "
-                   << il2cpp_method_get_param_name(method, i);
+            if (parameter_class) {
+                auto pname = il2cpp_class_get_name(parameter_class);
+                outPut << (pname ? pname : "?");
+            } else {
+                outPut << "?";
+            }
+            auto paramName = il2cpp_method_get_param_name(method, i);
+            outPut << " " << (paramName ? paramName : "?");
             outPut << ", ";
         }
         if (param_count > 0) {
             outPut.seekp(-2, outPut.cur);
         }
         outPut << ") { }\n";
-        //TODO GenericInstMethod
     }
     return outPut.str();
 }
@@ -177,7 +182,8 @@ std::string dump_property(Il2CppClass *klass) {
             prop_class = il2cpp_class_from_type(param);
         }
         if (prop_class) {
-            outPut << il2cpp_class_get_name(prop_class) << " " << prop_name << " { ";
+            auto pcname = il2cpp_class_get_name(prop_class);
+            outPut << (pcname ? pcname : "?") << " " << (prop_name ? prop_name : "?") << " { ";
             if (get) {
                 outPut << "get; ";
             }
@@ -233,8 +239,11 @@ std::string dump_field(Il2CppClass *klass) {
             }
         }
         auto field_type = il2cpp_field_get_type(field);
+        if (!field_type) { outPut << "? ?\n"; continue; }
         auto field_class = il2cpp_class_from_type(field_type);
-        outPut << il2cpp_class_get_name(field_class) << " " << il2cpp_field_get_name(field);
+        auto fcname = field_class ? il2cpp_class_get_name(field_class) : nullptr;
+        auto fname = il2cpp_field_get_name(field);
+        outPut << (fcname ? fcname : "?") << " " << (fname ? fname : "?");
         //TODO 获取构造函数初始化后的字段值
         if (attrs & FIELD_ATTRIBUTE_LITERAL && is_enum) {
             uint64_t val = 0;
@@ -299,13 +308,15 @@ std::string dump_type(const Il2CppType *type) {
     auto parent = il2cpp_class_get_parent(klass);
     if (!is_valuetype && !is_enum && parent) {
         auto parent_type = il2cpp_class_get_type(parent);
-        if (parent_type->type != IL2CPP_TYPE_OBJECT) {
-            extends.emplace_back(il2cpp_class_get_name(parent));
+        if (parent_type && parent_type->type != IL2CPP_TYPE_OBJECT) {
+            auto pname = il2cpp_class_get_name(parent);
+            if (pname) extends.emplace_back(pname);
         }
     }
     void *iter = nullptr;
     while (auto itf = il2cpp_class_get_interfaces(klass, &iter)) {
-        extends.emplace_back(il2cpp_class_get_name(itf));
+        auto iname = il2cpp_class_get_name(itf);
+        if (iname) extends.emplace_back(iname);
     }
     if (!extends.empty()) {
         outPut << " : " << extends[0];
