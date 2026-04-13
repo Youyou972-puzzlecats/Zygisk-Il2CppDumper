@@ -409,7 +409,6 @@ void il2cpp_dump(const char *outDir) {
         imageOutput << "// Dumped via il2cpp_class_for_each\n";
         imageOutput << "// Total classes: " << g_all_classes.size() << "\n";
 
-        int errors = 0;
         for (size_t ci = 0; ci < g_all_classes.size(); ci++) {
             auto klass = g_all_classes[ci];
             if (!klass) continue;
@@ -426,19 +425,13 @@ void il2cpp_dump(const char *outDir) {
                     }
                 }
             }
-            try {
-                auto outPut = imageStr.str() + dump_type(type);
-                outPuts.push_back(outPut);
-            } catch (...) {
-                errors++;
-                LOGW("Error dumping class %zu", ci);
-            }
+            auto className = il2cpp_class_get_name(klass);
+            if (!className) continue;
+            auto outPut = imageStr.str() + dump_type(type);
+            outPuts.push_back(outPut);
             if (ci % 500 == 0 && ci > 0) {
                 LOGI("Progress: %zu/%zu classes", ci, g_all_classes.size());
             }
-        }
-        if (errors > 0) {
-            LOGW("Total dump errors: %d", errors);
         }
     } else {
         LOGE("No method available to enumerate classes!");
